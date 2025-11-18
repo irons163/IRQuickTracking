@@ -12,8 +12,8 @@ struct IRQuickTrackingApp: App {
 //            )
 //        }
         WindowGroup {
-          HabitsAppView(
-            store: Store(initialState: HabitsFeature.State()) { HabitsFeature() }
+            ItemsAppView(
+            store: Store(initialState: ItemsFeature.State()) { ItemsFeature() }
           )
         }
     }

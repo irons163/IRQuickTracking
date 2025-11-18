@@ -3,7 +3,7 @@ import ComposableArchitecture
 
 // MARK: - Models
 
-public struct Habit: Equatable, Identifiable, Hashable, Codable {
+public struct Item: Equatable, Identifiable, Hashable, Codable {
     public let id: UUID
     public var title: String
     public var icon: String
@@ -13,7 +13,8 @@ public struct Habit: Equatable, Identifiable, Hashable, Codable {
     public var notes: String
     public var reminderEnabled: Bool
     public var reminderTime: Date
-    public var logs: [HabitLog]
+    public var logs: [ItemLog]
+    public var photoData: Data?    // 新增，用于存储照片数据
 
     public init(
         id: UUID = UUID(),
@@ -25,7 +26,8 @@ public struct Habit: Equatable, Identifiable, Hashable, Codable {
         notes: String = "",
         reminderEnabled: Bool = false,
         reminderTime: Date = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: .now)!,
-        logs: [HabitLog] = []
+        logs: [ItemLog] = [],
+        photoData: Data? = nil
     ) {
         self.id = id
         self.title = title
@@ -37,10 +39,11 @@ public struct Habit: Equatable, Identifiable, Hashable, Codable {
         self.reminderEnabled = reminderEnabled
         self.reminderTime = reminderTime
         self.logs = logs
+        self.photoData = photoData
     }
 }
 
-public struct HabitLog: Equatable, Identifiable, Hashable, Codable {
+public struct ItemLog: Equatable, Identifiable, Hashable, Codable {
     public var id: UUID = UUID()
     public var date: Date
 }
@@ -70,7 +73,7 @@ extension DependencyValues { var calendar: Calendar { get { self[CalendarKey.sel
 
 // MARK: - Helpers
 
-extension Habit {
+extension Item {
     func didSatisfy(on day: Date, calendar: Calendar) -> Bool {
         let start = calendar.startOfDay(for: day)
         let count = logs.filter { calendar.isDate($0.date, inSameDayAs: start) }.count
@@ -93,10 +96,10 @@ extension Habit {
     }
 }
 
-// MARK: - Feature: NewHabit
+// MARK: - Feature: NewItem
 
 @Reducer
-struct NewHabitFeature {
+struct NewItemFeature {
     @ObservableState
     struct State: Equatable {
         var title = ""
@@ -108,6 +111,7 @@ struct NewHabitFeature {
         var reminderEnabled = false
         var reminderTime: Date = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: .now)!
         var isIconPickerPresented = false
+        var photoData: Data? = nil
     }
 
     enum Action: Equatable, BindableAction {
@@ -120,7 +124,7 @@ struct NewHabitFeature {
     }
 
     enum Delegate: Equatable {
-        case added(Habit)
+        case added(Item)
         case cancel
     }
 
@@ -145,7 +149,7 @@ struct NewHabitFeature {
 
             case .addTapped:
                 let tags = state.tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                let new = Habit(
+                let new = Item(
                     title: state.title,
                     icon: state.icon,
                     color: state.color,
@@ -154,7 +158,8 @@ struct NewHabitFeature {
                     notes: state.notes,
                     reminderEnabled: state.reminderEnabled,
                     reminderTime: state.reminderTime,
-                    logs: []
+                    logs: [],
+                    photoData: state.photoData
                 )
                 return .send(.delegate(.added(new)))
 
@@ -165,15 +170,15 @@ struct NewHabitFeature {
     }
 }
 
-// MARK: - Feature: Habits (Root)
+// MARK: - Feature: Items (Root)
 
 @Reducer
-struct HabitsFeature {
+struct ItemsFeature {
     @ObservableState
     struct State: Equatable {
-        var habits: IdentifiedArrayOf<Habit> = []
+        var items: IdentifiedArrayOf<Item> = []
         var sort: Sort = .newest
-        @Presents var newHabit: NewHabitFeature.State? = nil
+        @Presents var newItem: NewItemFeature.State? = nil
 
         enum Sort: String, CaseIterable, Equatable, Identifiable { case newest, streak, weekly; var id: String { rawValue } }
     }
@@ -181,9 +186,9 @@ struct HabitsFeature {
     enum Action: Equatable, BindableAction {
         case binding(BindingAction<State>)
         case plusTapped
-        case newHabit(PresentationAction<NewHabitFeature.Action>)
-        case toggleCheck(id: Habit.ID)
-        case removeTodayLog(id: Habit.ID)
+        case newItem(PresentationAction<NewItemFeature.Action>)
+        case toggleCheck(id: Item.ID)
+        case removeTodayLog(id: Item.ID)
     }
 
     @Dependency(\.date) var date
@@ -197,61 +202,61 @@ struct HabitsFeature {
                 return .none
 
             case .plusTapped:
-                state.newHabit = .init()
+                state.newItem = .init()
                 return .none
 
-            case .newHabit(.presented(.delegate(.cancel))):
-                state.newHabit = nil
+            case .newItem(.presented(.delegate(.cancel))):
+                state.newItem = nil
                 return .none
 
-            case .newHabit(.presented(.delegate(.added(let habit)))):
-                state.habits.insert(habit, at: 0)
-                state.newHabit = nil
+            case .newItem(.presented(.delegate(.added(let item)))):
+                state.items.insert(item, at: 0)
+                state.newItem = nil
                 return .none
 
-            case .newHabit:
+            case .newItem:
                 return .none
 
             case let .toggleCheck(id):
-                guard var h = state.habits[id: id] else { return .none }
+                guard var i = state.items[id: id] else { return .none }
                 let today = calendar.startOfDay(for: date.now)
-                let count = h.logs.filter { calendar.isDate($0.date, inSameDayAs: today) }.count
-                if count >= h.targetPerDay {
-                    if let idx = h.logs.lastIndex(where: { calendar.isDate($0.date, inSameDayAs: today) }) { h.logs.remove(at: idx) }
+                let count = i.logs.filter { calendar.isDate($0.date, inSameDayAs: today) }.count
+                if count >= i.targetPerDay {
+                    if let idx = i.logs.lastIndex(where: { calendar.isDate($0.date, inSameDayAs: today) }) { i.logs.remove(at: idx) }
                 } else {
-                    h.logs.append(.init(date: date.now))
+                    i.logs.append(.init(date: date.now))
                 }
-                state.habits[id: id] = h
+                state.items[id: id] = i
                 return .none
 
             case let .removeTodayLog(id):
-                guard var h = state.habits[id: id] else { return .none }
+                guard var i = state.items[id: id] else { return .none }
                 let today = calendar.startOfDay(for: date.now)
-                if let idx = h.logs.lastIndex(where: { calendar.isDate($0.date, inSameDayAs: today) }) { h.logs.remove(at: idx) }
-                state.habits[id: id] = h
+                if let idx = i.logs.lastIndex(where: { calendar.isDate($0.date, inSameDayAs: today) }) { i.logs.remove(at: idx) }
+                state.items[id: id] = i
                 return .none
             }
         }
-        .ifLet(\.$newHabit, action: \.newHabit) { NewHabitFeature() }
+        .ifLet(\.$newItem, action: \.newItem) { NewItemFeature() }
     }
 }
 
 // MARK: - Views
 
-struct HabitsView: View {
-    @Bindable var store: StoreOf<HabitsFeature>
+struct ItemsView: View {
+    @Bindable var store: StoreOf<ItemsFeature>
 
     var body: some View {
         NavigationStack {
             WithPerceptionTracking {
                 Group {
-                    if store.habits.isEmpty {
+                    if store.items.isEmpty {
                         EmptyStateView(onNew: { store.send(.plusTapped) })
                     } else {
-                        HabitsListView(store: store)
+                        ItemsListView(store: store)
                     }
                 }
-                .navigationTitle("Habits")
+                .navigationTitle("Items")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { store.send(.plusTapped) } label: { Image(systemName: "plus.circle.fill").font(.title2) }
@@ -259,8 +264,8 @@ struct HabitsView: View {
                 }
             }
         }
-        .sheet(store: store.scope(state: \.$newHabit, action: \.newHabit)) { newStore in
-            NewHabitView(store: newStore)
+        .sheet(store: store.scope(state: \.$newItem, action: \.newItem)) { newStore in
+            NewItemView(store: newStore)
         }
     }
 }
@@ -272,10 +277,10 @@ struct EmptyStateView: View {
         VStack(spacing: 24) {
             Spacer()
             Image(systemName: "checklist").font(.system(size: 64)).foregroundStyle(.gray)
-            Text("Build better days").font(.largeTitle).bold()
-            Text("Create your first habit and track your streaks.")
+            Text("Start tracking your items").font(.largeTitle).bold()
+            Text("Create your first item and monitor your usage streaks.")
                 .foregroundStyle(.secondary)
-            Button(action: onNew) { Label("New Habit", systemImage: "plus").fontWeight(.semibold) }
+            Button(action: onNew) { Label("New Item", systemImage: "plus").fontWeight(.semibold) }
                 .buttonStyle(.borderedProminent)
             Spacer()
         }
@@ -284,9 +289,9 @@ struct EmptyStateView: View {
     }
 }
 
-// New Habit sheet (Screen 2)
-struct NewHabitView: View {
-    @Bindable var store: StoreOf<NewHabitFeature>
+// New Item sheet (Screen 2)
+struct NewItemView: View {
+    @Bindable var store: StoreOf<NewItemFeature>
 
     var body: some View {
         NavigationStack {
@@ -321,7 +326,7 @@ struct NewHabitView: View {
                         }
                     }
                 }
-                .navigationTitle("New Habit")
+                .navigationTitle("New Item")
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) { Button("Cancel") { store.send(.cancelTapped) } }
                     ToolbarItem(placement: .topBarTrailing) {
@@ -363,33 +368,33 @@ struct SFSymbolPickerTCA: View {
 }
 
 // List (Screen 3)
-struct HabitsListView: View {
-    @Bindable var store: StoreOf<HabitsFeature>
+struct ItemsListView: View {
+    @Bindable var store: StoreOf<ItemsFeature>
     @Dependency(\.date) private var date
     @Dependency(\.calendar) private var calendar
 
     var body: some View {
         WithPerceptionTracking {
             VStack(spacing: 0) {
-                if let top = store.habits.sorted(by: { $0.streak(today: date.now, calendar: calendar) > $1.streak(today: date.now, calendar: calendar) }).first {
-                    LeaderboardRow(habit: top, calendar: calendar, now: date.now)
+                if let top = store.items.sorted(by: { $0.streak(today: date.now, calendar: calendar) > $1.streak(today: date.now, calendar: calendar) }).first {
+                    LeaderboardRow(item: top, calendar: calendar, now: date.now)
                         .padding(.horizontal)
                         .padding(.top, 4)
                 }
 
                 Picker("Sort", selection: $store.sort) {
-                    Text("Newest").tag(HabitsFeature.State.Sort.newest)
-                    Text("Streak").tag(HabitsFeature.State.Sort.streak)
-                    Text("Weekly %").tag(HabitsFeature.State.Sort.weekly)
+                    Text("Newest").tag(ItemsFeature.State.Sort.newest)
+                    Text("Streak").tag(ItemsFeature.State.Sort.streak)
+                    Text("Weekly %").tag(ItemsFeature.State.Sort.weekly)
                 }
                 .pickerStyle(.segmented)
                 .padding(.horizontal)
                 .padding(.vertical, 6)
 
                 List {
-                    ForEach(sortedHabits()) { habit in
-                        HabitRow(habit: habit, calendar: calendar, now: date.now) {
-                            store.send(.toggleCheck(id: habit.id))
+                    ForEach(sortedItems()) { item in
+                        ItemRow(item: item, calendar: calendar, now: date.now) {
+                            store.send(.toggleCheck(id: item.id))
                         }
                     }
                 }
@@ -399,45 +404,45 @@ struct HabitsListView: View {
         }
     }
 
-    private func weeklyPercent(_ h: Habit) -> Double {
+    private func weeklyPercent(_ i: Item) -> Double {
         let start = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: date.now))!
         let days = (0..<7).map { calendar.date(byAdding: .day, value: $0, to: start)! }
-        let hits = days.filter { h.didSatisfy(on: $0, calendar: calendar) }.count
+        let hits = days.filter { i.didSatisfy(on: $0, calendar: calendar) }.count
         return Double(hits) / 7.0
     }
 
-    private func sortedHabits() -> [Habit] {
+    private func sortedItems() -> [Item] {
         switch store.sort {
         case .newest:
-            return Array(store.habits)
+            return Array(store.items)
         case .streak:
-            return store.habits.sorted { $0.streak(today: date.now, calendar: calendar) > $1.streak(today: date.now, calendar: calendar) }
+            return store.items.sorted { $0.streak(today: date.now, calendar: calendar) > $1.streak(today: date.now, calendar: calendar) }
         case .weekly:
-            return store.habits.sorted { weeklyPercent($0) > weeklyPercent($1) }
+            return store.items.sorted { weeklyPercent($0) > weeklyPercent($1) }
         }
     }
 }
 
 struct LeaderboardRow: View {
-    let habit: Habit
+    let item: Item
     let calendar: Calendar
     let now: Date
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: habit.icon).foregroundStyle(habit.color.color)
-            Text(habit.title).font(.headline)
+            Image(systemName: item.icon).foregroundStyle(item.color.color)
+            Text(item.title).font(.headline)
             Spacer()
             Image(systemName: "flame.fill").foregroundStyle(.orange)
-            Text("\(habit.streak(today: now, calendar: calendar))").fontWeight(.semibold)
+            Text("\(item.streak(today: now, calendar: calendar))").fontWeight(.semibold)
         }
         .padding(14)
         .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
-struct HabitRow: View {
-    let habit: Habit
+struct ItemRow: View {
+    let item: Item
     let calendar: Calendar
     let now: Date
     var onTap: () -> Void
@@ -445,18 +450,18 @@ struct HabitRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             Button(action: onTap) {
-                Image(systemName: habit.didSatisfy(on: now, calendar: calendar) ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(habit.color.color)
+                Image(systemName: item.didSatisfy(on: now, calendar: calendar) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(item.color.color)
                     .font(.title3)
             }
             .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(habit.title).font(.headline)
-                ProgressDots(habit: habit, calendar: calendar, now: now)
+                Text(item.title).font(.headline)
+                ProgressDots(item: item, calendar: calendar, now: now)
             }
             Spacer()
-            Text("\(habit.todayCount(now, calendar: calendar))/\(habit.targetPerDay)")
+            Text("\(item.todayCount(now, calendar: calendar))/\(item.targetPerDay)")
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 6)
@@ -464,7 +469,7 @@ struct HabitRow: View {
 }
 
 struct ProgressDots: View {
-    let habit: Habit
+    let item: Item
     let calendar: Calendar
     let now: Date
 
@@ -474,7 +479,7 @@ struct ProgressDots: View {
             ForEach(0..<7, id: \.self) { i in
                 let d = calendar.date(byAdding: .day, value: i, to: start)!
                 Circle()
-                    .fill(habit.didSatisfy(on: d, calendar: calendar) ? habit.color.color : Color(.systemGray5))
+                    .fill(item.didSatisfy(on: d, calendar: calendar) ? item.color.color : Color(.systemGray5))
                     .frame(width: 8, height: 8)
                     .opacity(calendar.isDateInToday(d) ? 1 : 0.9)
             }
@@ -498,32 +503,33 @@ struct SearchBar: View {
 
 // MARK: - App Entry
 
-struct HabitsAppView: View {
-    let store: StoreOf<HabitsFeature>
-    var body: some View { HabitsView(store: store) }
+struct ItemsAppView: View {
+    let store: StoreOf<ItemsFeature>
+    var body: some View { ItemsView(store: store) }
 }
 
 // MARK: - Previews
 
 #Preview("TCA – Empty") {
-    HabitsAppView(
-        store: Store(initialState: HabitsFeature.State()) { HabitsFeature() }
+    ItemsAppView(
+        store: Store(initialState: ItemsFeature.State()) { ItemsFeature() }
     )
 }
 
 #Preview("TCA – List") {
-    var state = HabitsFeature.State()
-    state.habits = [
-        Habit(id: UUID(), title: "Aaa", logs: [HabitLog(date: .now)]),
-        Habit(title: "Read 20 min", icon: "book.fill", color: .green, targetPerDay: 1, logs: []),
-        Habit(title: "Drink Water", icon: "drop.fill", color: .teal, targetPerDay: 8, logs: [])
+    var state = ItemsFeature.State()
+    state.items = [
+        Item(id: UUID(), title: "Aaa", logs: [ItemLog(date: .now)]),
+        Item(title: "Read 20 min", icon: "book.fill", color: .green, targetPerDay: 1, logs: []),
+        Item(title: "Drink Water", icon: "drop.fill", color: .teal, targetPerDay: 8, logs: [])
     ].identifiedArray
 
-    return HabitsAppView(
-        store: Store(initialState: state) { HabitsFeature() }
+    return ItemsAppView(
+        store: Store(initialState: state) { ItemsFeature() }
     )
 }
 
-private extension Array where Element == Habit {
-    var identifiedArray: IdentifiedArrayOf<Habit> { .init(uniqueElements: self) }
+private extension Array where Element == Item {
+    var identifiedArray: IdentifiedArrayOf<Item> { .init(uniqueElements: self) }
 }
+
