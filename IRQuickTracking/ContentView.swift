@@ -1,5 +1,6 @@
 import SwiftUI
 import ComposableArchitecture
+import PhotosUI // 新增
 
 // MARK: - Models
 
@@ -112,6 +113,7 @@ struct NewItemFeature {
         var reminderTime: Date = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: .now)!
         var isIconPickerPresented = false
         var photoData: Data? = nil
+        var selectedPhotoItem: PhotosPickerItem? = nil // 新增
     }
 
     enum Action: Equatable, BindableAction {
@@ -121,6 +123,8 @@ struct NewItemFeature {
         case iconPickerPresented(Bool)
         case iconPicked(String)
         case delegate(Delegate)
+        case photoPicked(PhotosPickerItem?) // 新增
+        case loadPhotoData(TaskResult<Data?>) // 新增
     }
 
     enum Delegate: Equatable {
@@ -162,6 +166,22 @@ struct NewItemFeature {
                     photoData: state.photoData
                 )
                 return .send(.delegate(.added(new)))
+
+            case .photoPicked(let item):
+                state.selectedPhotoItem = item
+                guard let item else { return .none }
+                return .run { send in
+                    let data = try? await item.loadTransferable(type: Data.self)
+                    await send(.loadPhotoData(.success(data)))
+                }
+
+            case .loadPhotoData(.success(let data)):
+                state.photoData = data
+                return .none
+
+            case .loadPhotoData(.failure):
+                // 可选：错误处理
+                return .none
 
             case .delegate:
                 return .none
@@ -297,6 +317,35 @@ struct NewItemView: View {
         NavigationStack {
             WithPerceptionTracking {
                 Form {
+                    Section("Photo") {
+                        HStack {
+                            if let data = store.photoData, let uiImage = UIImage(data: data) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 64, height: 64)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.3)))
+                            } else {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color(.systemGray5))
+                                        .frame(width: 64, height: 64)
+                                    Image(systemName: "photo")
+                                        .font(.system(size: 28))
+                                        .foregroundStyle(.gray)
+                                }
+                            }
+                            PhotosPicker(
+                                selection: $store.selectedPhotoItem,
+                                matching: .images,
+                                photoLibrary: .shared()
+                            ) {
+                                Label("拍照或选照片", systemImage: "camera")
+                            }
+                        }
+                    }
+
                     Section("Basics") {
                         TextField("Title", text: $store.title)
                         HStack {
@@ -335,7 +384,11 @@ struct NewItemView: View {
                 }
             }
         }
-                // icon picker presented via TCA sheet in parent, so we don't need another sheet here.
+        .onChange(of: store.selectedPhotoItem) { old, new in
+            if old != new {
+                store.send(.photoPicked(new))
+            }
+        }
     }
 }
 
@@ -449,6 +502,21 @@ struct ItemRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
+            // 左侧显示照片或icon
+            if let data = item.photoData, let uiImage = UIImage(data: data) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 40, height: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.gray.opacity(0.15)))
+            } else {
+                Image(systemName: item.icon)
+                    .foregroundStyle(item.color.color)
+                    .font(.system(size: 28))
+                    .frame(width: 40, height: 40)
+            }
+
             Button(action: onTap) {
                 Image(systemName: item.didSatisfy(on: now, calendar: calendar) ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(item.color.color)
