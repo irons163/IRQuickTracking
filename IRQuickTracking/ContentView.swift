@@ -190,6 +190,121 @@ struct NewItemFeature {
     }
 }
 
+// MARK: - Feature: EditItem
+
+@Reducer
+struct EditItemFeature {
+    @ObservableState
+    struct State: Equatable {
+        var id: UUID
+        var logs: [ItemLog]
+
+        var title: String
+        var icon: String
+        var color: Color
+        var tagsText: String
+        var targetPerDay: Int
+        var notes: String
+        var reminderEnabled: Bool
+        var reminderTime: Date
+        var isIconPickerPresented = false
+        var photoData: Data? = nil
+        var selectedPhotoItem: PhotosPickerItem? = nil
+
+        init(item: Item) {
+            self.id = item.id
+            self.logs = item.logs
+            self.title = item.title
+            self.icon = item.icon
+            self.color = item.color.color
+            self.tagsText = item.tags.joined(separator: ", ")
+            self.targetPerDay = item.targetPerDay
+            self.notes = item.notes
+            self.reminderEnabled = item.reminderEnabled
+            self.reminderTime = item.reminderTime
+            self.photoData = item.photoData
+        }
+    }
+
+    enum Action: Equatable, BindableAction {
+        case binding(BindingAction<State>)
+        case cancelTapped
+        case saveTapped
+        case iconPickerPresented(Bool)
+        case iconPicked(String)
+        case delegate(Delegate)
+        case photoPicked(PhotosPickerItem?)
+        case loadPhotoData(TaskResult<Data?>)
+        case removePhotoTapped
+    }
+
+    enum Delegate: Equatable {
+        case updated(Item)
+        case cancel
+    }
+
+    var body: some ReducerOf<Self> {
+        BindingReducer()
+        Reduce { state, action in
+            switch action {
+            case .binding:
+                return .none
+
+            case .iconPickerPresented(let flag):
+                state.isIconPickerPresented = flag
+                return .none
+
+            case .iconPicked(let s):
+                state.icon = s
+                state.isIconPickerPresented = false
+                return .none
+
+            case .cancelTapped:
+                return .send(.delegate(.cancel))
+
+            case .saveTapped:
+                let tags = state.tagsText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                let updated = Item(
+                    id: state.id,
+                    title: state.title,
+                    icon: state.icon,
+                    color: state.color,
+                    tags: tags,
+                    targetPerDay: state.targetPerDay,
+                    notes: state.notes,
+                    reminderEnabled: state.reminderEnabled,
+                    reminderTime: state.reminderTime,
+                    logs: state.logs,
+                    photoData: state.photoData
+                )
+                return .send(.delegate(.updated(updated)))
+
+            case .photoPicked(let item):
+                state.selectedPhotoItem = item
+                guard let item else { return .none }
+                return .run { send in
+                    let data = try? await item.loadTransferable(type: Data.self)
+                    await send(.loadPhotoData(.success(data)))
+                }
+
+            case .loadPhotoData(.success(let data)):
+                state.photoData = data
+                return .none
+
+            case .removePhotoTapped:
+                state.photoData = nil
+                return .none
+
+            case .loadPhotoData(.failure):
+                return .none
+
+            case .delegate:
+                return .none
+            }
+        }
+    }
+}
+
 // MARK: - Feature: Items (Root)
 
 @Reducer
@@ -199,6 +314,7 @@ struct ItemsFeature {
         var items: IdentifiedArrayOf<Item> = []
         var sort: Sort = .newest
         @Presents var newItem: NewItemFeature.State? = nil
+        @Presents var editItem: EditItemFeature.State? = nil
 
         enum Sort: String, CaseIterable, Equatable, Identifiable { case newest, streak, weekly; var id: String { rawValue } }
     }
@@ -207,6 +323,8 @@ struct ItemsFeature {
         case binding(BindingAction<State>)
         case plusTapped
         case newItem(PresentationAction<NewItemFeature.Action>)
+        case editItem(PresentationAction<EditItemFeature.Action>)
+        case editButtonTapped(id: Item.ID)
         case toggleCheck(id: Item.ID)
         case removeTodayLog(id: Item.ID)
     }
@@ -237,6 +355,23 @@ struct ItemsFeature {
             case .newItem:
                 return .none
 
+            case let .editButtonTapped(id):
+                guard let item = state.items[id: id] else { return .none }
+                state.editItem = .init(item: item)
+                return .none
+
+            case .editItem(.presented(.delegate(.cancel))):
+                state.editItem = nil
+                return .none
+
+            case .editItem(.presented(.delegate(.updated(let updated)))):
+                state.items[id: updated.id] = updated
+                state.editItem = nil
+                return .none
+
+            case .editItem:
+                return .none
+
             case let .toggleCheck(id):
                 guard var i = state.items[id: id] else { return .none }
                 let today = calendar.startOfDay(for: date.now)
@@ -258,6 +393,7 @@ struct ItemsFeature {
             }
         }
         .ifLet(\.$newItem, action: \.newItem) { NewItemFeature() }
+        .ifLet(\.$editItem, action: \.editItem) { EditItemFeature() }
     }
 }
 
@@ -286,6 +422,9 @@ struct ItemsView: View {
         }
         .sheet(store: store.scope(state: \.$newItem, action: \.newItem)) { newStore in
             NewItemView(store: newStore)
+        }
+        .sheet(store: store.scope(state: \.$editItem, action: \.editItem)) { editStore in
+            EditItemView(store: editStore)
         }
     }
 }
@@ -392,6 +531,96 @@ struct NewItemView: View {
     }
 }
 
+// Edit Item sheet
+struct EditItemView: View {
+    @Bindable var store: StoreOf<EditItemFeature>
+
+    var body: some View {
+        NavigationStack {
+            WithPerceptionTracking {
+                Form {
+                    Section("Photo") {
+                        HStack(spacing: 12) {
+                            if let data = store.photoData, let uiImage = UIImage(data: data) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 64, height: 64)
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.gray.opacity(0.3)))
+                            } else {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color(.systemGray5))
+                                        .frame(width: 64, height: 64)
+                                    Image(systemName: "photo")
+                                        .font(.system(size: 28))
+                                        .foregroundStyle(.gray)
+                                }
+                            }
+                            PhotosPicker(
+                                selection: $store.selectedPhotoItem,
+                                matching: .images,
+                                photoLibrary: .shared()
+                            ) {
+                                Label("更換照片", systemImage: "camera")
+                            }
+                            if store.photoData != nil {
+                                Button(role: .destructive) {
+                                    store.send(.removePhotoTapped)
+                                } label: {
+                                    Label("移除照片", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+
+                    Section("Basics") {
+                        TextField("Title", text: $store.title)
+                        HStack {
+                            Text("Icon")
+                            Spacer()
+                            Image(systemName: store.icon).foregroundStyle(store.color)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture { store.send(.iconPickerPresented(true)) }
+
+                        ColorPicker("Color", selection: $store.color, supportsOpacity: false)
+                        TextField("Tags (comma separated)", text: $store.tagsText)
+                    }
+
+                    Stepper(value: $store.targetPerDay, in: 1...10) { HStack { Text("Target per day: "); Text("\(store.targetPerDay)") } }
+
+                    Section("Notes") {
+                        TextField("Optional notes", text: $store.notes, axis: .vertical).lineLimit(3...6)
+                    }
+
+                    Section("Reminder") {
+                        Toggle("Enable daily reminder", isOn: $store.reminderEnabled)
+                        if store.reminderEnabled {
+                            DatePicker("Time", selection: $store.reminderTime, displayedComponents: .hourAndMinute)
+                        } else {
+                            HStack { Text("Time"); Spacer(); Text(store.reminderTime.formatted(date: .omitted, time: .shortened)).foregroundStyle(.secondary) }
+                        }
+                    }
+                }
+                .navigationTitle("Edit Item")
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) { Button("Cancel") { store.send(.cancelTapped) } }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Save") { store.send(.saveTapped) }.disabled(store.title.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                }
+            }
+        }
+        .onChange(of: store.selectedPhotoItem) { old, new in
+            if old != new {
+                store.send(.photoPicked(new))
+            }
+        }
+    }
+}
+
 // Minimal SF Symbol picker – quick grid (stateless)
 struct SFSymbolPickerTCA: View {
     var onPick: (String) -> Void
@@ -448,6 +677,13 @@ struct ItemsListView: View {
                     ForEach(sortedItems()) { item in
                         ItemRow(item: item, calendar: calendar, now: date.now) {
                             store.send(.toggleCheck(id: item.id))
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button {
+                                store.send(.editButtonTapped(id: item.id))
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
                         }
                     }
                 }
@@ -612,4 +848,3 @@ struct ItemsAppView: View {
 private extension Array where Element == Item {
     var identifiedArray: IdentifiedArrayOf<Item> { .init(uniqueElements: self) }
 }
-
