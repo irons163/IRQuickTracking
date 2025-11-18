@@ -483,7 +483,19 @@ struct LeaderboardRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: item.icon).foregroundStyle(item.color.color)
+            // 优先显示照片
+            if let data = item.photoData, let uiImage = UIImage(data: data) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 36, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.gray.opacity(0.15)))
+            } else {
+                Image(systemName: item.icon).foregroundStyle(item.color.color)
+                    .font(.system(size: 28))
+                    .frame(width: 36, height: 36)
+            }
             Text(item.title).font(.headline)
             Spacer()
             Image(systemName: "flame.fill").foregroundStyle(.orange)
