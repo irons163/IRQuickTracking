@@ -1,6 +1,7 @@
 import SwiftUI
 import ComposableArchitecture
-import PhotosUI // 新增
+import PhotosUI
+import UIKit
 
 // MARK: - Models
 
@@ -15,7 +16,7 @@ public struct Item: Equatable, Identifiable, Hashable, Codable {
     public var reminderEnabled: Bool
     public var reminderTime: Date
     public var logs: [ItemLog]
-    public var photoData: Data?    // 新增，用于存储照片数据
+    public var photoData: Data?
 
     public init(
         id: UUID = UUID(),
@@ -113,7 +114,14 @@ struct NewItemFeature {
         var reminderTime: Date = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: .now)!
         var isIconPickerPresented = false
         var photoData: Data? = nil
-        var selectedPhotoItem: PhotosPickerItem? = nil // 新增
+
+        // 單一 presenter 管理
+        var activeSheet: Sheet? = nil
+        enum Sheet: Equatable, Identifiable {
+            case camera
+            case photoLibrary
+            var id: Int { self == .camera ? 0 : 1 }
+        }
     }
 
     enum Action: Equatable, BindableAction {
@@ -123,8 +131,16 @@ struct NewItemFeature {
         case iconPickerPresented(Bool)
         case iconPicked(String)
         case delegate(Delegate)
-        case photoPicked(PhotosPickerItem?) // 新增
-        case loadPhotoData(TaskResult<Data?>) // 新增
+        case setPhotoData(Data?)
+
+        // 單一 presenter
+        case setActiveSheet(State.Sheet?)
+        case openCameraTapped
+        case openPhotoLibraryTapped
+
+        // 回傳
+        case cameraPhotoCaptured(Data?)
+        case libraryPhotoPicked(Data?)
     }
 
     enum Delegate: Equatable {
@@ -167,20 +183,30 @@ struct NewItemFeature {
                 )
                 return .send(.delegate(.added(new)))
 
-            case .photoPicked(let item):
-                state.selectedPhotoItem = item
-                guard let item else { return .none }
-                return .run { send in
-                    let data = try? await item.loadTransferable(type: Data.self)
-                    await send(.loadPhotoData(.success(data)))
-                }
-
-            case .loadPhotoData(.success(let data)):
+            case .setPhotoData(let data):
                 state.photoData = data
                 return .none
 
-            case .loadPhotoData(.failure):
-                // 可选：错误处理
+            case .setActiveSheet(let sheet):
+                state.activeSheet = sheet
+                return .none
+
+            case .openCameraTapped:
+                state.activeSheet = .camera
+                return .none
+
+            case .openPhotoLibraryTapped:
+                state.activeSheet = .photoLibrary
+                return .none
+
+            case .cameraPhotoCaptured(let data):
+                state.photoData = data
+                state.activeSheet = nil
+                return .none
+
+            case .libraryPhotoPicked(let data):
+                state.photoData = data
+                state.activeSheet = nil
                 return .none
 
             case .delegate:
@@ -209,7 +235,14 @@ struct EditItemFeature {
         var reminderTime: Date
         var isIconPickerPresented = false
         var photoData: Data? = nil
-        var selectedPhotoItem: PhotosPickerItem? = nil
+
+        // 單一 presenter 管理
+        var activeSheet: Sheet? = nil
+        enum Sheet: Equatable, Identifiable {
+            case camera
+            case photoLibrary
+            var id: Int { self == .camera ? 0 : 1 }
+        }
 
         init(item: Item) {
             self.id = item.id
@@ -233,8 +266,16 @@ struct EditItemFeature {
         case iconPickerPresented(Bool)
         case iconPicked(String)
         case delegate(Delegate)
-        case photoPicked(PhotosPickerItem?)
-        case loadPhotoData(TaskResult<Data?>)
+        case setPhotoData(Data?)
+
+        // 單一 presenter
+        case setActiveSheet(State.Sheet?)
+        case openCameraTapped
+        case openPhotoLibraryTapped
+
+        // 相片結果
+        case cameraPhotoCaptured(Data?)
+        case libraryPhotoPicked(Data?)
         case removePhotoTapped
     }
 
@@ -279,15 +320,7 @@ struct EditItemFeature {
                 )
                 return .send(.delegate(.updated(updated)))
 
-            case .photoPicked(let item):
-                state.selectedPhotoItem = item
-                guard let item else { return .none }
-                return .run { send in
-                    let data = try? await item.loadTransferable(type: Data.self)
-                    await send(.loadPhotoData(.success(data)))
-                }
-
-            case .loadPhotoData(.success(let data)):
+            case .setPhotoData(let data):
                 state.photoData = data
                 return .none
 
@@ -295,7 +328,26 @@ struct EditItemFeature {
                 state.photoData = nil
                 return .none
 
-            case .loadPhotoData(.failure):
+            case .setActiveSheet(let sheet):
+                state.activeSheet = sheet
+                return .none
+
+            case .openCameraTapped:
+                state.activeSheet = .camera
+                return .none
+
+            case .openPhotoLibraryTapped:
+                state.activeSheet = .photoLibrary
+                return .none
+
+            case .cameraPhotoCaptured(let data):
+                state.photoData = data
+                state.activeSheet = nil
+                return .none
+
+            case .libraryPhotoPicked(let data):
+                state.photoData = data
+                state.activeSheet = nil
                 return .none
 
             case .delegate:
@@ -475,13 +527,17 @@ struct NewItemView: View {
                                         .foregroundStyle(.gray)
                                 }
                             }
-                            PhotosPicker(
-                                selection: $store.selectedPhotoItem,
-                                matching: .images,
-                                photoLibrary: .shared()
-                            ) {
-                                Label("拍照或选照片", systemImage: "camera")
+                            Button {
+                                store.send(.openPhotoLibraryTapped)
+                            } label: {
+                                Label("從相簿選擇", systemImage: "photo.on.rectangle")
                             }
+                            Button {
+                                store.send(.openCameraTapped)
+                            } label: {
+                                Label("拍照", systemImage: "camera")
+                            }
+                            .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
                         }
                     }
 
@@ -523,9 +579,16 @@ struct NewItemView: View {
                 }
             }
         }
-        .onChange(of: store.selectedPhotoItem) { old, new in
-            if old != new {
-                store.send(.photoPicked(new))
+        .sheet(item: $store.activeSheet.sending(\.setActiveSheet)) { sheet in
+            switch sheet {
+            case .camera:
+                CameraPicker { data in
+                    store.send(.cameraPhotoCaptured(data))
+                }
+            case .photoLibrary:
+                PhotoLibraryPicker { data in
+                    store.send(.libraryPhotoPicked(data))
+                }
             }
         }
     }
@@ -558,12 +621,10 @@ struct EditItemView: View {
                                         .foregroundStyle(.gray)
                                 }
                             }
-                            PhotosPicker(
-                                selection: $store.selectedPhotoItem,
-                                matching: .images,
-                                photoLibrary: .shared()
-                            ) {
-                                Label("更換照片", systemImage: "camera")
+                            Button {
+                                store.send(.openPhotoLibraryTapped)
+                            } label: {
+                                Label("更換照片（相簿）", systemImage: "photo.on.rectangle")
                             }
                             if store.photoData != nil {
                                 Button(role: .destructive) {
@@ -572,6 +633,12 @@ struct EditItemView: View {
                                     Label("移除照片", systemImage: "trash")
                                 }
                             }
+                            Button {
+                                store.send(.openCameraTapped)
+                            } label: {
+                                Label("拍照", systemImage: "camera")
+                            }
+                            .disabled(!UIImagePickerController.isSourceTypeAvailable(.camera))
                         }
                     }
 
@@ -613,9 +680,16 @@ struct EditItemView: View {
                 }
             }
         }
-        .onChange(of: store.selectedPhotoItem) { old, new in
-            if old != new {
-                store.send(.photoPicked(new))
+        .sheet(item: $store.activeSheet.sending(\.setActiveSheet)) { sheet in
+            switch sheet {
+            case .camera:
+                CameraPicker { data in
+                    store.send(.cameraPhotoCaptured(data))
+                }
+            case .photoLibrary:
+                PhotoLibraryPicker { data in
+                    store.send(.libraryPhotoPicked(data))
+                }
             }
         }
     }
@@ -719,7 +793,6 @@ struct LeaderboardRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // 优先显示照片
             if let data = item.photoData, let uiImage = UIImage(data: data) {
                 Image(uiImage: uiImage)
                     .resizable()
@@ -750,7 +823,6 @@ struct ItemRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            // 左侧显示照片或icon
             if let data = item.photoData, let uiImage = UIImage(data: data) {
                 Image(uiImage: uiImage)
                     .resizable()
@@ -822,6 +894,96 @@ struct SearchBar: View {
 struct ItemsAppView: View {
     let store: StoreOf<ItemsFeature>
     var body: some View { ItemsView(store: store) }
+}
+
+// MARK: - Camera Picker
+
+struct CameraPicker: UIViewControllerRepresentable {
+    var onImageData: (Data?) -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        picker.allowsEditing = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onImageData: onImageData)
+    }
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let onImageData: (Data?) -> Void
+
+        init(onImageData: @escaping (Data?) -> Void) {
+            self.onImageData = onImageData
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true) {
+                self.onImageData(nil)
+            }
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            let image = (info[.originalImage] as? UIImage)
+            let data = image?.jpegData(compressionQuality: 0.9)
+            picker.dismiss(animated: true) {
+                self.onImageData(data)
+            }
+        }
+    }
+}
+
+// MARK: - Photo Library Picker (PHPicker)
+
+struct PhotoLibraryPicker: UIViewControllerRepresentable {
+    var onImageData: (Data?) -> Void
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .images
+        config.selectionLimit = 1
+        let vc = PHPickerViewController(configuration: config)
+        vc.delegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onImageData: onImageData)
+    }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let onImageData: (Data?) -> Void
+
+        init(onImageData: @escaping (Data?) -> Void) {
+            self.onImageData = onImageData
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            guard let provider = results.first?.itemProvider else {
+                picker.dismiss(animated: true) { self.onImageData(nil) }
+                return
+            }
+
+            if provider.canLoadObject(ofClass: UIImage.self) {
+                provider.loadObject(ofClass: UIImage.self) { object, _ in
+                    let image = object as? UIImage
+                    let data = image?.jpegData(compressionQuality: 0.9)
+                    DispatchQueue.main.async {
+                        picker.dismiss(animated: true) { self.onImageData(data) }
+                    }
+                }
+            } else {
+                picker.dismiss(animated: true) { self.onImageData(nil) }
+            }
+        }
+    }
 }
 
 // MARK: - Previews
