@@ -379,10 +379,24 @@ struct ItemsFeature {
         case editButtonTapped(id: Item.ID)
         case toggleCheck(id: Item.ID)
         case removeTodayLog(id: Item.ID)
+
+        // 持久化
+        case load
+        case loaded([Item])
+        case loadFailed(String)
+        case save
+        case saveSucceeded
+        case saveFailed(String)
     }
 
     @Dependency(\.date) var date
     @Dependency(\.calendar) var calendar
+
+    // 簡單的持久化 URL（Documents/items.json）
+    private func persistenceURL() -> URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        return dir.appendingPathComponent("items.json")
+    }
 
     var body: some ReducerOf<Self> {
         BindingReducer()
@@ -402,7 +416,7 @@ struct ItemsFeature {
             case .newItem(.presented(.delegate(.added(let item)))):
                 state.items.insert(item, at: 0)
                 state.newItem = nil
-                return .none
+                return .merge(.send(.save))
 
             case .newItem:
                 return .none
@@ -419,7 +433,7 @@ struct ItemsFeature {
             case .editItem(.presented(.delegate(.updated(let updated)))):
                 state.items[id: updated.id] = updated
                 state.editItem = nil
-                return .none
+                return .merge(.send(.save))
 
             case .editItem:
                 return .none
@@ -434,13 +448,64 @@ struct ItemsFeature {
                     i.logs.append(.init(date: date.now))
                 }
                 state.items[id: id] = i
-                return .none
+                return .merge(.send(.save))
 
             case let .removeTodayLog(id):
                 guard var i = state.items[id: id] else { return .none }
                 let today = calendar.startOfDay(for: date.now)
                 if let idx = i.logs.lastIndex(where: { calendar.isDate($0.date, inSameDayAs: today) }) { i.logs.remove(at: idx) }
                 state.items[id: id] = i
+                return .merge(.send(.save))
+
+            // 持久化：載入
+            case .load:
+                let url = persistenceURL()
+                return .run { send in
+                    do {
+                        if FileManager.default.fileExists(atPath: url.path) {
+                            let data = try Data(contentsOf: url)
+                            if data.isEmpty {
+                                await send(.loaded([]))
+                            } else {
+                                let items = try JSONDecoder().decode([Item].self, from: data)
+                                await send(.loaded(items))
+                            }
+                        } else {
+                            await send(.loaded([]))
+                        }
+                    } catch {
+                        await send(.loadFailed(error.localizedDescription))
+                    }
+                }
+
+            case let .loaded(items):
+                state.items = IdentifiedArrayOf(uniqueElements: items)
+                return .none
+
+            case .loadFailed:
+                // 讀取失敗時保留現況（可加上錯誤提示）
+                return .none
+
+            // 持久化：保存
+            case .save:
+                let url = persistenceURL()
+                let snapshot = Array(state.items)
+                return .run { send in
+                    do {
+                        let data = try JSONEncoder().encode(snapshot)
+                        // 確保資料夾存在
+                        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        try data.write(to: url, options: .atomic)
+                        await send(.saveSucceeded)
+                    } catch {
+                        await send(.saveFailed(error.localizedDescription))
+                    }
+                }
+
+            case .saveSucceeded:
+                return .none
+
+            case .saveFailed:
                 return .none
             }
         }
@@ -472,6 +537,7 @@ struct ItemsView: View {
                 }
             }
         }
+        .task { store.send(.load) } // 啟動時載入
         .sheet(store: store.scope(state: \.$newItem, action: \.newItem)) { newStore in
             NewItemView(store: newStore)
         }
@@ -572,9 +638,18 @@ struct NewItemView: View {
                 }
                 .navigationTitle("New Item")
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) { Button("Cancel") { store.send(.cancelTapped) } }
+                    ToolbarItem(placement: .topBarLeading) { Button("Cancel") {
+                            store.send(.cancelTapped)
+                        }
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Add") { store.send(.addTapped) }.disabled(store.title.trimmingCharacters(in: .whitespaces).isEmpty)
+                        Button("Add") {
+                            store.send(.addTapped)
+                        }.disabled(
+                            store.title.trimmingCharacters(
+                                in: .whitespaces
+                            ).isEmpty
+                        )
                     }
                 }
             }
